@@ -5,7 +5,6 @@
 // Copyright 2021 Cirrus Logic, Inc.
 //
 // Author: Lucas Tanure <tanureal@opensource.cirrus.com>
-
 #include <linux/acpi.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
@@ -1449,65 +1448,40 @@ static int cs35l41_get_speaker_id(struct device *dev, int amp_index,
 	return speaker_id;
 }
 
-static void configure_hw_cfg_for_csc3551(struct cs35l41_hw_cfg *hw_cfg,
-					 int index)
-{
-	// function to configure hw_cfg for CSC3551.
-	hw_cfg->spk_pos = index;
-	hw_cfg->gpio1.func = 1;
-	hw_cfg->gpio1.valid = true;
-	hw_cfg->gpio2.func = 0x02;
-	hw_cfg->gpio2.valid = true;
-	hw_cfg->bst_ipk = hw_cfg->bst_ind = hw_cfg->bst_cap = -1;
-	hw_cfg->bst_type = (hw_cfg->bst_ind > 0 || hw_cfg->bst_cap > 0 ||
-			    hw_cfg->bst_ipk > 0) ?
-				   CS35L41_INT_BOOST :
-				   CS35L41_EXT_BOOST;
-	hw_cfg->valid = true;
-}
-
 static void common_configuration(struct cs35l41_hda *cs35l41,
 				 struct device *physdev, int index)
 {
-	// Common configuration logic
 	cs35l41->index = index;
 	cs35l41->channel_index = 0;
 	cs35l41->reset_gpio = gpiod_get_index(
 		physdev, NULL, index, index ? GPIOD_OUT_LOW : GPIOD_OUT_HIGH);
 	cs35l41->speaker_id = cs35l41_get_speaker_id(physdev, index, 0, 2);
 }
-/*
- * Device CLSA010(0/1) doesn't have _DSD so a gpiod_get by the label reset won't work.
- * And devices created by serial-multi-instantiate don't have their device struct
- * pointing to the correct fwnode, so acpi_dev must be used here.
- * And devm functions expect that the device requesting the resource has the correct
- * fwnode.
- *
- * also added support for CSC3551. However, sound is very low.
- */
-static int cs35l41_no_acpi_dsd(struct cs35l41_hda *cs35l41,
-			       struct device *physdev, int id, const char *hid)
+
+// HID-specific configurations.
+static int configure_for_hid(struct cs35l41_hda *cs35l41,
+			     struct cs35l41_hw_cfg *hw_cfg,
+			     struct device *physdev, int id, const char *hid)
 {
-	struct cs35l41_hw_cfg *hw_cfg = &cs35l41->hw_cfg;
 	int index = (id == 0x40) ? 0 : 1;
 
-	printk("CSC3551: no_acpi_dsd: %s\n", hid);
-
 	if (strncmp(hid, "CSC3551", 7) == 0) {
-		printk("CSC3551: id == 0x%x\n", id);
-		printk("CS3551: reset_gpio == %p\n", cs35l41->reset_gpio);
 		common_configuration(cs35l41, physdev, index);
-		configure_hw_cfg_for_csc3551(hw_cfg, index);
-		printk("CSC3551: Done.\n");
+		hw_cfg->spk_pos = index;
+		hw_cfg->gpio1.func = 1;
+		hw_cfg->gpio1.valid = true;
+		hw_cfg->gpio2.func = 0x02;
+		hw_cfg->gpio2.valid = true;
+		hw_cfg->bst_ipk = hw_cfg->bst_ind = hw_cfg->bst_cap = -1;
+		hw_cfg->bst_type = (hw_cfg->bst_ind > 0 ||
+				    hw_cfg->bst_cap > 0 ||
+				    hw_cfg->bst_ipk > 0) ?
+					   CS35L41_INT_BOOST :
+					   CS35L41_EXT_BOOST;
+		hw_cfg->valid = true;
+
 		return 0;
 	}
-
-	/* check I2C address to assign the index */
-	common_configuration(cs35l41, physdev, index);
-	hw_cfg->spk_pos = cs35l41->index;
-	hw_cfg->gpio2.func = CS35L41_INTERRUPT;
-	hw_cfg->gpio2.valid = true;
-	hw_cfg->valid = true;
 
 	if (strncmp(hid, "CLSA0100", 8) == 0) {
 		hw_cfg->bst_type = CS35L41_EXT_BOOST_NO_VSPK_SWITCH;
@@ -1516,17 +1490,43 @@ static int cs35l41_no_acpi_dsd(struct cs35l41_hda *cs35l41,
 		hw_cfg->gpio1.func = CS35l41_VSPK_SWITCH;
 		hw_cfg->gpio1.valid = true;
 	} else {
-		/*
-		 * Note: CLSA010(0/1) are special cases which use a slightly different design.
-		 * All other HIDs e.g. CSC3551 require valid ACPI _DSD properties to be supported.
-		 */
-		dev_err(cs35l41->dev,
-			"Error: ACPI _DSD Properties are missing for HID %s.\n",
-			hid);
 		hw_cfg->valid = hw_cfg->gpio1.valid = hw_cfg->gpio2.valid =
 			false;
 		return -EINVAL;
 	}
+
+	return 1;
+}
+/*               
+ * Device CLSA010(0/1) doesn't have _DSD so a gpiod_get by the label reset won't work.
+ * And devices created by serial-multi-instantiate don't have their device struct
+ * pointing to the correct fwnode, so acpi_dev must be used here.
+ * And devm functions expect that the device requesting the resource has the correct
+ * fwnode.       
+ *               
+ * also added support for CSC3551. However, sound is very low.
+ */
+static int cs35l41_no_acpi_dsd(struct cs35l41_hda *cs35l41,
+			       struct device *physdev, int id, const char *hid)
+{
+	struct cs35l41_hw_cfg *hw_cfg = &cs35l41->hw_cfg;
+
+	int res = configure_for_hid(cs35l41, hw_cfg, physdev, id, hid);
+	if (res <= 0) {
+		if (res == -EINVAL) {
+			dev_err(cs35l41->dev,
+				"Error: ACPI _DSD Properties are missing for HID %s.\n",
+				hid);
+		}
+		return res;
+	}
+	/* check I2C address to assign the index */
+	int index = (id == 0x40) ? 0 : 1;
+	common_configuration(cs35l41, physdev, index);
+	hw_cfg->spk_pos = cs35l41->index;
+	hw_cfg->gpio2.func = CS35L41_INTERRUPT;
+	hw_cfg->gpio2.valid = true;
+	hw_cfg->valid = true;
 
 	return 0;
 }
