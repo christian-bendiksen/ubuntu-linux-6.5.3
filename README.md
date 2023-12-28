@@ -1,4 +1,4 @@
-# Ubuntu 6.5.3 Kernel with sound fix
+# Ubuntu 6.5.3 Kernel with sound fix for Legion 7 Slim 16ARHA7
 
 This custom Kernel is designed to solve the sound issues on the Lenovo Legion 7 Slim 16ARHA7, specifically addressing the problem of no sound. After installing this kernel, you should get sound back, though it might be at a lower volume than usual.
 
